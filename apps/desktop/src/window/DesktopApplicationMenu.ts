@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { encodeUaControlCenterMenuAction } from "@t3tools/shared/uaControlCenter";
 
 import type * as Electron from "electron";
 
@@ -134,6 +135,12 @@ export const make = Effect.gen(function* () {
     const settingsClick = () => {
       runMenuEffect("open-settings", dispatchMenuAction("open-settings"));
     };
+    const openUaControlCenterClick = () => {
+      runMenuEffect(
+        "open-ua-control-center",
+        dispatchMenuAction(encodeUaControlCenterMenuAction(environment.uaControlCenterUrl)),
+      );
+    };
     const zoomClick = (direction: DesktopWindow.MainWindowZoomDirection) => () => {
       runMenuEffect(`zoom-${direction}`, zoomMainWindow(direction));
     };
@@ -208,6 +215,11 @@ export const make = Effect.gen(function* () {
           { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: zoomClick("out") },
           { type: "separator" },
           { role: "togglefullscreen" },
+          { type: "separator" },
+          {
+            label: "Open Unified Agent Control Center",
+            click: openUaControlCenterClick,
+          },
         ],
       },
       { role: "windowMenu" },

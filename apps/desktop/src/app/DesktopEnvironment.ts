@@ -69,6 +69,11 @@ export class DesktopEnvironment extends Context.Service<
     readonly commitHashOverride: Option.Option<string>;
     readonly otlpTracesUrl: Option.Option<string>;
     readonly otlpExportIntervalMs: number;
+    /**
+     * Mac hub Control Center URL for the desktop preview pane
+     * (`T3CODE_UA_CONTROL_CENTER_URL`, default Tailscale hub `/ui`).
+     */
+    readonly uaControlCenterUrl: string;
     readonly branding: DesktopAppBranding;
     readonly displayName: string;
     readonly appUserModelId: string;
@@ -221,6 +226,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     commitHashOverride: config.commitHashOverride,
     otlpTracesUrl: config.otlpTracesUrl,
     otlpExportIntervalMs: config.otlpExportIntervalMs,
+    uaControlCenterUrl: config.uaControlCenterUrl,
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
