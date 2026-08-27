@@ -191,6 +191,10 @@
       "types": "./src/preview.ts",
       "import": "./src/preview.ts"
     },
+    "./uaControlCenter": {
+      "types": "./src/uaControlCenter.ts",
+      "import": "./src/uaControlCenter.ts"
+    },
     "./previewViewport": {
       "types": "./src/previewViewport.ts",
       "import": "./src/previewViewport.ts"

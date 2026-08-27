@@ -1,3 +1,4 @@
+import { DEFAULT_UA_CONTROL_CENTER_URL } from "@t3tools/shared/uaControlCenter";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Option from "effect/Option";
@@ -53,6 +54,24 @@ export const DesktopConfig = Config.all({
   mockUpdates: optionalBoolean("T3CODE_DESKTOP_MOCK_UPDATES"),
   mockUpdateServerPort: Config.port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(
     Config.withDefault(3000),
+  ),
+  /**
+   * Mac hub Control Center URL loaded in the desktop preview pane.
+   * Auth is the hub UI cookie session (ua_ui), not an MCP bearer in the renderer.
+   */
+  uaControlCenterUrl: Config.string("T3CODE_UA_CONTROL_CENTER_URL").pipe(
+    Config.withDefault(DEFAULT_UA_CONTROL_CENTER_URL),
+    Config.map((value) => {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        return DEFAULT_UA_CONTROL_CENTER_URL;
+      }
+      try {
+        return new URL(trimmed).href;
+      } catch {
+        return DEFAULT_UA_CONTROL_CENTER_URL;
+      }
+    }),
   ),
 });
 

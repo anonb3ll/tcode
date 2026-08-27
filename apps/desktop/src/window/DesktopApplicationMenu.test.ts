@@ -180,4 +180,38 @@ describe("DesktopApplicationMenu", () => {
       assert.equal(yield* Deferred.await(selectedAction), "zoom-in");
     }),
   );
+
+  it.effect("routes View menu Unified Agent Control Center through DesktopWindow", () =>
+    Effect.gen(function* () {
+      const selectedAction = yield* Deferred.make<string>();
+      const applicationMenuTemplate =
+        yield* Deferred.make<readonly Electron.MenuItemConstructorOptions[]>();
+
+      yield* configureMenu(selectedAction, applicationMenuTemplate);
+
+      const template = yield* Deferred.await(applicationMenuTemplate);
+      const viewMenu = template.find((item) => item.label === "View");
+      assert.isDefined(viewMenu);
+      if (!Array.isArray(viewMenu.submenu)) {
+        throw new Error("Expected View menu submenu to be an array.");
+      }
+
+      const controlCenterItem = viewMenu.submenu.find(
+        (item) => item.label === "Open Unified Agent Control Center",
+      );
+      assert.isDefined(controlCenterItem);
+      if (typeof controlCenterItem.click !== "function") {
+        throw new Error("Expected Control Center menu item to have a click handler.");
+      }
+
+      controlCenterItem.click(
+        {} as Electron.MenuItem,
+        {} as Electron.BrowserWindow,
+        {} as KeyboardEvent,
+      );
+      const action = yield* Deferred.await(selectedAction);
+      assert.isTrue(action.startsWith("open-ua-control-center:"));
+      assert.isTrue(action.includes("100.111.5.64:8765/ui"));
+    }),
+  );
 });
