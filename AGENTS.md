@@ -153,3 +153,18 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 - Don't verify with browsers or computer use unless the user explicitly agrees or requests it.
 - Security is important, but should not be over-indexed on, especially for dev mode/maintainer-only features.
+
+## Learned User Preferences
+
+- Prefer a launcher-installed Electron desktop app on Desktop Ubuntu (not headless-only), customized for this machine's config.
+- The `tcode` fork exists so UA high-signal UI can eventually live inside the T3 desktop shell (fewer separate apps); Mac hub stays authority over Tailscale.
+- Multi-host T3: Desktop and MacBook Pro should both expose servers that clients can switch between; MacBook Pro may stay server-only / one-way.
+- Prefer `codebase-memory-mcp` over `code-review-graph` for local agent MCP (CRG spawned many multi-GB processes).
+
+## Learned Workspace Facts
+
+- `~/dev/tcode` is Anthony's T3 Code fork; upstream guidance in this file still applies unless overridden in the learned sections.
+- Desktop Ubuntu runs always-on headless `t3code.service` (typically port 3773); the GUI app may bind another port when 3773 is taken. Both currently share `~/.t3` — dual backends on one data dir is a short-term gotcha, not a long-term design.
+- MacBook Pro also runs a T3 server; MacBook Air is typically client-only. Prefer `t3 pair --tailscale` for phone/remote pairing once Tailscale **Serve** and **HTTPS Certificates** are enabled on the tailnet (admin DNS + Serve enable link). Until then, use MagicDNS HTTP (`http://desktopubuntu.tailb8459a.ts.net:3773/pair#token=…`) — never paste a `127.0.0.1` pair URL into a phone. Keep `t3code.service` on `T3CODE_HOST=0.0.0.0` (`t3 service update` has stripped that before).
+- Local Linux desktop install used here: `~/.local/opt/t3code` with `~/.local/bin/t3code` (clears `ELECTRON_RUN_AS_NODE`); see `scripts/install-local-desktop.sh`.
+- Initiative to embed UA web UI surfaces into tcode desktop is filed as task #625.
