@@ -99,6 +99,57 @@ describe("Antigravity stream-json protocol", () => {
     });
   });
 
+  it("normalizes tool step execution events", () => {
+    const activeEvent = parseAntigravityStreamLine(
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          step_type: "tool",
+          state: "ACTIVE",
+          tool_name: "run_command",
+          tool_info: {
+            name: "run_command",
+            parameters: { CommandLine: "echo PROBE_TEST" },
+          },
+        },
+      }),
+    );
+
+    NodeAssert.deepStrictEqual(normalizeAntigravityCliEvent(activeEvent), {
+      type: "tool.started",
+      stepIndex: 2,
+      toolName: "run_command",
+      parameters: { CommandLine: "echo PROBE_TEST" },
+    });
+
+    const doneEvent = parseAntigravityStreamLine(
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          step_type: "tool",
+          state: "DONE",
+          tool_name: "run_command",
+          duration_seconds: 0.189,
+          tool_info: {
+            name: "run_command",
+            parameters: { CommandLine: "echo PROBE_TEST" },
+            output: "PROBE_TEST\r\n",
+          },
+        },
+      }),
+    );
+
+    NodeAssert.deepStrictEqual(normalizeAntigravityCliEvent(doneEvent), {
+      type: "tool.completed",
+      stepIndex: 2,
+      toolName: "run_command",
+      durationSeconds: 0.189,
+      output: "PROBE_TEST\r\n",
+    });
+  });
+
   it("normalizes terminal results", () => {
     const event = parseAntigravityStreamLine(
       JSON.stringify({
@@ -156,6 +207,24 @@ describe("Antigravity stream-json protocol", () => {
       type: "turn.aborted",
       status: "FAILED",
       response: "Provider failed",
+    });
+
+    const errorEvent = parseAntigravityStreamLine(
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "",
+          status: "ERROR",
+          response: "",
+          error: "context canceled",
+        },
+      }),
+    );
+
+    NodeAssert.deepStrictEqual(normalizeAntigravityCliEvent(errorEvent), {
+      type: "turn.aborted",
+      status: "ERROR",
+      response: "context canceled",
     });
   });
 });

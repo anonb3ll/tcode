@@ -48,6 +48,7 @@ interface AntigravityResultPayload {
   readonly conversation_id: string;
   readonly status: string;
   readonly response?: string;
+  readonly error?: string;
   readonly duration_seconds?: number;
   readonly num_turns?: number;
   readonly usage?: Readonly<Record<string, unknown>>;
@@ -75,6 +76,19 @@ export type AntigravityProviderSignal =
       readonly type: "content.delta";
       readonly stepIndex: number;
       readonly text: string;
+    }
+  | {
+      readonly type: "tool.started";
+      readonly stepIndex: number;
+      readonly toolName: string;
+      readonly parameters?: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly type: "tool.completed";
+      readonly stepIndex: number;
+      readonly toolName: string;
+      readonly durationSeconds?: number;
+      readonly output?: string;
     }
   | {
       readonly type: "turn.completed";
@@ -195,17 +209,55 @@ export const normalizeAntigravityCliEvent = (
 
   if (event.event === "step_update") {
     const stepType = event.step_update.step_type;
-    const stepIndex = event.step_update.step_index;
-    const text = event.step_update.text_delta;
-    if (
-      stepType !== "agent_response" ||
-      typeof stepIndex !== "number" ||
-      typeof text !== "string" ||
-      text.length === 0
-    ) {
+    const stepIndex =
+      typeof event.step_update.step_index === "number" ? event.step_update.step_index : 0;
+    const state = event.step_update.state;
+
+    if (stepType === "agent_response") {
+      const text = event.step_update.text_delta;
+      if (typeof text === "string" && text.length > 0) {
+        return { type: "content.delta", stepIndex, text };
+      }
       return null;
     }
-    return { type: "content.delta", stepIndex, text };
+
+    if (stepType === "tool") {
+      const toolInfo = isRecord(event.step_update.tool_info) ? event.step_update.tool_info : {};
+      const toolName =
+        typeof event.step_update.tool_name === "string"
+          ? event.step_update.tool_name
+          : typeof toolInfo.name === "string"
+            ? toolInfo.name
+            : "unknown";
+
+      const parameters = isRecord(toolInfo.parameters) ? toolInfo.parameters : undefined;
+      const output = typeof toolInfo.output === "string" ? toolInfo.output : undefined;
+      const durationSeconds =
+        typeof event.step_update.duration_seconds === "number"
+          ? event.step_update.duration_seconds
+          : undefined;
+
+      if (state === "ACTIVE") {
+        return {
+          type: "tool.started",
+          stepIndex,
+          toolName,
+          ...(parameters ? { parameters } : {}),
+        };
+      }
+
+      if (state === "DONE") {
+        return {
+          type: "tool.completed",
+          stepIndex,
+          toolName,
+          ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+          ...(output !== undefined ? { output } : {}),
+        };
+      }
+    }
+
+    return null;
   }
 
   if (event.result.status === "SUCCESS") {
@@ -223,7 +275,7 @@ export const normalizeAntigravityCliEvent = (
   return {
     type: "turn.aborted",
     status: event.result.status,
-    ...(event.result.response !== undefined ? { response: event.result.response } : {}),
+    response: event.result.error || event.result.response || "",
   };
 };
 
