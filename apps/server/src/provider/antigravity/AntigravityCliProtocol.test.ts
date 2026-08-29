@@ -7,16 +7,19 @@ import {
   classifyAntigravityAvailability,
   normalizeAntigravityCliEvent,
   normalizeAntigravityProcessExit,
+  parseAntigravityEffort,
   parseAntigravityStreamLine,
+  resolveAntigravityCliMode,
 } from "./AntigravityCliProtocol.ts";
 
 describe("buildAntigravityPrintArgs", () => {
-  it("builds a bounded read-only stream-json launch", () => {
+  it("builds a UA-owned-approval stream-json launch without fake sandbox", () => {
     NodeAssert.deepStrictEqual(
       buildAntigravityPrintArgs({
         prompt: "Inspect the repository without changing files.",
         model: "gemini-3.7-flash-low",
         effort: "low",
+        interactionMode: "plan",
       }),
       [
         "--print",
@@ -25,7 +28,7 @@ describe("buildAntigravityPrintArgs", () => {
         "stream-json",
         "--mode",
         "plan",
-        "--sandbox",
+        "--dangerously-skip-permissions",
         "--model",
         "gemini-3.7-flash-low",
         "--effort",
@@ -34,11 +37,13 @@ describe("buildAntigravityPrintArgs", () => {
     );
   });
 
-  it("resumes an existing conversation without weakening safeguards", () => {
+  it("maps default interaction to accept-edits and appends launchArgs", () => {
     NodeAssert.deepStrictEqual(
       buildAntigravityPrintArgs({
         prompt: "Continue the inspection.",
         conversationId: "conversation-123",
+        runtimeMode: "full-access",
+        launchArgs: "--sandbox --add-dir /tmp/extra",
       }),
       [
         "--print",
@@ -46,11 +51,24 @@ describe("buildAntigravityPrintArgs", () => {
         "--output-format",
         "stream-json",
         "--mode",
-        "plan",
-        "--sandbox",
+        "accept-edits",
+        "--dangerously-skip-permissions",
         "--conversation",
         "conversation-123",
+        "--sandbox",
+        "--add-dir",
+        "/tmp/extra",
       ],
+    );
+  });
+
+  it("drops invalid effort literals", () => {
+    NodeAssert.equal(parseAntigravityEffort("ultrathink"), undefined);
+    NodeAssert.equal(parseAntigravityEffort("low"), "low");
+    NodeAssert.equal(resolveAntigravityCliMode({ interactionMode: "plan" }), "plan");
+    NodeAssert.equal(
+      resolveAntigravityCliMode({ runtimeMode: "approval-required" }),
+      "accept-edits",
     );
   });
 });
@@ -99,7 +117,82 @@ describe("Antigravity stream-json protocol", () => {
     });
   });
 
-  it("normalizes terminal results", () => {
+  it("normalizes tool step execution events including ERROR", () => {
+    const activeEvent = parseAntigravityStreamLine(
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          step_type: "tool",
+          state: "ACTIVE",
+          tool_name: "run_command",
+          tool_info: {
+            name: "run_command",
+            parameters: { CommandLine: "echo PROBE_TEST" },
+          },
+        },
+      }),
+    );
+
+    NodeAssert.deepStrictEqual(normalizeAntigravityCliEvent(activeEvent), {
+      type: "tool.started",
+      stepIndex: 2,
+      toolName: "run_command",
+      parameters: { CommandLine: "echo PROBE_TEST" },
+    });
+
+    const doneEvent = parseAntigravityStreamLine(
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          step_type: "tool",
+          state: "DONE",
+          tool_name: "run_command",
+          duration_seconds: 0.189,
+          tool_info: {
+            name: "run_command",
+            parameters: { CommandLine: "echo PROBE_TEST" },
+            output: "PROBE_TEST\r\n",
+          },
+        },
+      }),
+    );
+
+    NodeAssert.deepStrictEqual(normalizeAntigravityCliEvent(doneEvent), {
+      type: "tool.completed",
+      stepIndex: 2,
+      toolName: "run_command",
+      durationSeconds: 0.189,
+      output: "PROBE_TEST\r\n",
+    });
+
+    const errorEvent = parseAntigravityStreamLine(
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          step_index: 3,
+          step_type: "tool",
+          state: "ERROR",
+          tool_name: "run_command",
+          tool_info: {
+            name: "run_command",
+            error: "permission denied",
+          },
+        },
+      }),
+    );
+
+    NodeAssert.deepStrictEqual(normalizeAntigravityCliEvent(errorEvent), {
+      type: "tool.failed",
+      stepIndex: 3,
+      toolName: "run_command",
+      status: "ERROR",
+      error: "permission denied",
+    });
+  });
+
+  it("normalizes terminal results and CANCELED taxonomy", () => {
     const event = parseAntigravityStreamLine(
       JSON.stringify({
         event: "result",
@@ -120,6 +213,22 @@ describe("Antigravity stream-json protocol", () => {
       durationSeconds: 0.806,
       numTurns: 1,
       usage: { input_tokens: 12, output_tokens: 3 },
+    });
+
+    const canceled = parseAntigravityStreamLine(
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-123",
+          status: "CANCELED",
+          response: "user canceled",
+        },
+      }),
+    );
+    NodeAssert.deepStrictEqual(normalizeAntigravityCliEvent(canceled), {
+      type: "turn.aborted",
+      status: "CANCELLED",
+      response: "user canceled",
     });
   });
 
@@ -157,6 +266,24 @@ describe("Antigravity stream-json protocol", () => {
       status: "FAILED",
       response: "Provider failed",
     });
+
+    const errorEvent = parseAntigravityStreamLine(
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "",
+          status: "ERROR",
+          response: "",
+          error: "context canceled",
+        },
+      }),
+    );
+
+    NodeAssert.deepStrictEqual(normalizeAntigravityCliEvent(errorEvent), {
+      type: "turn.aborted",
+      status: "ERROR",
+      response: "context canceled",
+    });
   });
 });
 
@@ -185,7 +312,7 @@ describe("Antigravity capability probes", () => {
     NodeAssert.deepStrictEqual(
       classifyAntigravityAvailability({
         version: { exitCode: 0, stdout: "1.1.22\n", stderr: "" },
-        models: { exitCode: 0, stdout: "models", stderr: "" },
+        models: { exitCode: 0, stdout: "models", stderr: "note: cached" },
       }),
       { status: "available", version: "1.1.22" },
     );

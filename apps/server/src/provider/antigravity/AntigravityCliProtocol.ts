@@ -1,10 +1,16 @@
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
+
 export type AntigravityEffort = "low" | "medium" | "high";
 
 export interface AntigravityPrintOptions {
   readonly prompt: string;
   readonly conversationId?: string;
   readonly model?: string;
-  readonly effort?: AntigravityEffort;
+  readonly effort?: string;
+  readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: ProviderInteractionMode;
+  readonly launchArgs?: string;
 }
 
 export interface AntigravityProbeCommandResult {
@@ -48,6 +54,7 @@ interface AntigravityResultPayload {
   readonly conversation_id: string;
   readonly status: string;
   readonly response?: string;
+  readonly error?: string;
   readonly duration_seconds?: number;
   readonly num_turns?: number;
   readonly usage?: Readonly<Record<string, unknown>>;
@@ -77,6 +84,28 @@ export type AntigravityProviderSignal =
       readonly text: string;
     }
   | {
+      readonly type: "tool.started";
+      readonly stepIndex: number;
+      readonly toolName: string;
+      readonly parameters?: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly type: "tool.completed";
+      readonly stepIndex: number;
+      readonly toolName: string;
+      readonly durationSeconds?: number;
+      readonly output?: string;
+    }
+  | {
+      readonly type: "tool.failed";
+      readonly stepIndex: number;
+      readonly toolName: string;
+      readonly status: string;
+      readonly durationSeconds?: number;
+      readonly output?: string;
+      readonly error?: string;
+    }
+  | {
       readonly type: "turn.completed";
       readonly response: string;
       readonly durationSeconds?: number;
@@ -92,17 +121,59 @@ export type AntigravityProviderSignal =
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const TOOL_FAILED_STATES = new Set(["ERROR", "FAILED", "CANCELED", "CANCELLED", "ABORTED"]);
+
+/**
+ * Parse effort settings. Unknown / empty values are dropped — do not cast
+ * arbitrary strings into the CLI `--effort` flag.
+ */
+export const parseAntigravityEffort = (
+  value: string | undefined,
+): AntigravityEffort | undefined => {
+  const trimmed = value?.trim().toLowerCase();
+  if (trimmed === "low" || trimmed === "medium" || trimmed === "high") {
+    return trimmed;
+  }
+  return undefined;
+};
+
+/**
+ * Map T3 session/turn modes onto agy `--mode`.
+ *
+ * Agy only exposes `plan` | `accept-edits`. T3 `RuntimeMode` is an approval
+ * posture, not an Agy mode — UA owns approval via `--dangerously-skip-permissions`.
+ * Prefer `interactionMode: "plan"` for plan; otherwise accept-edits.
+ *
+ * `--sandbox` is intentionally NOT hardcoded: it is a terminal restriction
+ * only (see #642), not a capability boundary. Pass it via `launchArgs` if wanted.
+ */
+export const resolveAntigravityCliMode = (input: {
+  readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: ProviderInteractionMode;
+}): "plan" | "accept-edits" => {
+  void input.runtimeMode;
+  return input.interactionMode === "plan" ? "plan" : "accept-edits";
+};
+
 export const buildAntigravityPrintArgs = (
   options: AntigravityPrintOptions,
 ): ReadonlyArray<string> => {
+  const mode = resolveAntigravityCliMode({
+    runtimeMode: options.runtimeMode,
+    interactionMode: options.interactionMode,
+  });
+  const effort = parseAntigravityEffort(options.effort);
+
   const args = [
     "--print",
     options.prompt,
     "--output-format",
     "stream-json",
     "--mode",
-    "plan",
-    "--sandbox",
+    mode,
+    // UA-owned approval: suppress mid-turn Agy permission prompts. T3/UA must
+    // gate before sendTurn; respondToRequest is a no-op by design.
+    "--dangerously-skip-permissions",
   ];
 
   if (options.conversationId !== undefined) {
@@ -111,8 +182,13 @@ export const buildAntigravityPrintArgs = (
   if (options.model !== undefined) {
     args.push("--model", options.model);
   }
-  if (options.effort !== undefined) {
-    args.push("--effort", options.effort);
+  if (effort !== undefined) {
+    args.push("--effort", effort);
+  }
+
+  const extra = tokenizeCliArgs(options.launchArgs);
+  if (extra.length > 0) {
+    args.push(...extra);
   }
 
   return args;
@@ -175,6 +251,14 @@ export const parseAntigravityStreamLine = (line: string): AntigravityCliEvent | 
   return null;
 };
 
+const normalizeAbortStatus = (status: string): string => {
+  const upper = status.toUpperCase();
+  if (upper === "CANCELED" || upper === "CANCELLED" || upper === "ABORTED") {
+    return "CANCELLED";
+  }
+  return status;
+};
+
 export const normalizeAntigravityCliEvent = (
   event: AntigravityCliEvent | null,
 ): AntigravityProviderSignal | null => {
@@ -195,17 +279,74 @@ export const normalizeAntigravityCliEvent = (
 
   if (event.event === "step_update") {
     const stepType = event.step_update.step_type;
-    const stepIndex = event.step_update.step_index;
-    const text = event.step_update.text_delta;
-    if (
-      stepType !== "agent_response" ||
-      typeof stepIndex !== "number" ||
-      typeof text !== "string" ||
-      text.length === 0
-    ) {
+    const stepIndex =
+      typeof event.step_update.step_index === "number" ? event.step_update.step_index : 0;
+    const state = event.step_update.state;
+
+    if (stepType === "agent_response") {
+      const text = event.step_update.text_delta;
+      if (typeof text === "string" && text.length > 0) {
+        return { type: "content.delta", stepIndex, text };
+      }
       return null;
     }
-    return { type: "content.delta", stepIndex, text };
+
+    if (stepType === "tool") {
+      const toolInfo = isRecord(event.step_update.tool_info) ? event.step_update.tool_info : {};
+      const toolName =
+        typeof event.step_update.tool_name === "string"
+          ? event.step_update.tool_name
+          : typeof toolInfo.name === "string"
+            ? toolInfo.name
+            : "unknown";
+
+      const parameters = isRecord(toolInfo.parameters) ? toolInfo.parameters : undefined;
+      const output = typeof toolInfo.output === "string" ? toolInfo.output : undefined;
+      const error =
+        typeof toolInfo.error === "string"
+          ? toolInfo.error
+          : typeof event.step_update.error === "string"
+            ? event.step_update.error
+            : undefined;
+      const durationSeconds =
+        typeof event.step_update.duration_seconds === "number"
+          ? event.step_update.duration_seconds
+          : undefined;
+      const stateLabel = typeof state === "string" ? state.toUpperCase() : "";
+
+      if (stateLabel === "ACTIVE") {
+        return {
+          type: "tool.started",
+          stepIndex,
+          toolName,
+          ...(parameters ? { parameters } : {}),
+        };
+      }
+
+      if (stateLabel === "DONE") {
+        return {
+          type: "tool.completed",
+          stepIndex,
+          toolName,
+          ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+          ...(output !== undefined ? { output } : {}),
+        };
+      }
+
+      if (TOOL_FAILED_STATES.has(stateLabel)) {
+        return {
+          type: "tool.failed",
+          stepIndex,
+          toolName,
+          status: normalizeAbortStatus(stateLabel),
+          ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+          ...(output !== undefined ? { output } : {}),
+          ...(error !== undefined ? { error } : {}),
+        };
+      }
+    }
+
+    return null;
   }
 
   if (event.result.status === "SUCCESS") {
@@ -222,8 +363,8 @@ export const normalizeAntigravityCliEvent = (
 
   return {
     type: "turn.aborted",
-    status: event.result.status,
-    ...(event.result.response !== undefined ? { response: event.result.response } : {}),
+    status: normalizeAbortStatus(event.result.status),
+    response: event.result.error || event.result.response || "",
   };
 };
 
