@@ -1489,6 +1489,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               deepMerge(encodedDefaultServerSettings, {
                 providers: {
                   codex: { enabled: true, binaryPath: firstMissing },
+                  antigravity: { enabled: false },
                   claudeAgent: { enabled: false },
                   cursor: { enabled: false },
                   grok: { enabled: false },
@@ -1712,9 +1713,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                       code: 0,
                     };
                   }
-                  if (joined === "auth status") {
+                  if (joined === "auth status" || joined === "models") {
                     return {
-                      stdout: '{"authenticated":true}\n',
+                      stdout: joined === "models" ? "model-a\n" : '{"authenticated":true}\n',
                       stderr: "",
                       code: 0,
                     };
@@ -1738,6 +1739,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               );
 
               assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
+                "antigravity",
                 "claudeAgent",
                 "codex",
                 "cursor",
