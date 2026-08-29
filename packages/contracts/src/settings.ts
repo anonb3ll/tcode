@@ -587,8 +587,12 @@ export const AntigravitySettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "Launch arguments",
-        description: "Additional CLI arguments passed to agy.",
-        providerSettingsForm: { placeholder: "e.g. --sandbox", clearWhenEmpty: "omit" },
+        description:
+          "Additional CLI arguments passed to agy (e.g. --add-dir /path). Note: --sandbox is a terminal restriction only, not a capability boundary.",
+        providerSettingsForm: {
+          placeholder: "e.g. --add-dir /extra",
+          clearWhenEmpty: "omit",
+        },
       }),
     ),
   },

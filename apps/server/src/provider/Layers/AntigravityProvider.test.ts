@@ -57,7 +57,7 @@ it.layer(NodeServices.layer)("checkAntigravityProviderStatus", (it) => {
     }),
   );
 
-  it.effect("reports a ready provider when agy is available and versions cleanly", () =>
+  it.effect("reports a ready provider when agy version and models probes succeed", () =>
     Effect.gen(function* () {
       const snapshot = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -67,7 +67,13 @@ it.layer(NodeServices.layer)("checkAntigravityProviderStatus", (it) => {
           const agyPath = path.join(dir, "agy");
           yield* fs.writeFileString(
             agyPath,
-            ["#!/bin/sh", 'echo "1.1.22"', "exit 0", ""].join("\n"),
+            [
+              "#!/bin/sh",
+              'if [ "$1" = "--version" ]; then echo "1.1.22"; exit 0; fi',
+              'if [ "$1" = "models" ]; then echo "gemini-3.7-flash-high"; exit 0; fi',
+              "exit 1",
+              "",
+            ].join("\n"),
           );
           yield* fs.chmod(agyPath, 0o755);
 
@@ -81,7 +87,43 @@ it.layer(NodeServices.layer)("checkAntigravityProviderStatus", (it) => {
       expect(snapshot.installed).toBe(true);
       expect(snapshot.status).toBe("ready");
       expect(snapshot.version).toBe("1.1.22");
+      expect(snapshot.auth?.status).toBe("authenticated");
       expect(snapshot.models.length).toBeGreaterThan(0);
+    }),
+  );
+
+  it.effect("reports unauthenticated when agy models fails after a good --version", () =>
+    Effect.gen(function* () {
+      const snapshot = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-agy-unauth-" });
+          const agyPath = path.join(dir, "agy");
+          yield* fs.writeFileString(
+            agyPath,
+            [
+              "#!/bin/sh",
+              'if [ "$1" = "--version" ]; then echo "1.1.22"; exit 0; fi',
+              'if [ "$1" = "models" ]; then echo "authentication required" >&2; exit 1; fi',
+              "exit 1",
+              "",
+            ].join("\n"),
+          );
+          yield* fs.chmod(agyPath, 0o755);
+
+          return yield* checkAntigravityProviderStatus(
+            decodeAntigravitySettings({ enabled: true, binaryPath: agyPath }),
+          );
+        }),
+      );
+
+      expect(snapshot.enabled).toBe(true);
+      expect(snapshot.installed).toBe(true);
+      expect(snapshot.status).toBe("warning");
+      expect(snapshot.version).toBe("1.1.22");
+      expect(snapshot.auth?.status).toBe("unauthenticated");
+      expect(snapshot.message).toMatch(/authentication required/i);
     }),
   );
 });

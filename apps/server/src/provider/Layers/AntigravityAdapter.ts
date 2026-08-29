@@ -38,6 +38,7 @@ import {
   buildAntigravityPrintArgs,
   normalizeAntigravityCliEvent,
   normalizeAntigravityProcessExit,
+  parseAntigravityEffort,
   parseAntigravityStreamLine,
   type AntigravityEffort,
 } from "../antigravity/AntigravityCliProtocol.ts";
@@ -60,21 +61,19 @@ interface AntigravitySessionContext {
   conversationId?: string;
   session: ProviderSession;
   effort?: AntigravityEffort;
+  launchArgs?: string;
   activeTurnId?: TurnId;
   activeProcess?: ActiveProcess;
   interruptedTurnIds: Set<TurnId>;
+  abortEmittedTurnIds: Set<TurnId>;
   turns: Array<{ id: TurnId; items: unknown[] }>;
   stopped: boolean;
 }
 
 const killProcess = (child: ChildProcess.ChildProcess, signal: NodeJS.Signals = "SIGTERM") => {
-  try {
-    process.kill(Number(child.pid), "SIGKILL");
-  } catch {
-    try {
-      child.kill().pipe(Effect.runFork);
-    } catch {}
-  }
+  child
+    .kill({ killSignal: signal, forceKillAfter: "500 millis" })
+    .pipe(Effect.ignore, Effect.runFork);
 };
 
 export function makeAntigravityAdapter(
@@ -115,7 +114,8 @@ export function makeAntigravityAdapter(
             const now = yield* nowIso;
             const initialModel =
               input.modelSelection?.model ?? settings.model ?? "gemini-3.7-flash-high";
-            const effort = (settings.effort?.trim() || undefined) as AntigravityEffort | undefined;
+            const effort = parseAntigravityEffort(settings.effort);
+            const launchArgs = settings.launchArgs?.trim() || undefined;
 
             const session: ProviderSession = {
               provider: PROVIDER,
@@ -138,9 +138,11 @@ export function makeAntigravityAdapter(
               conversationId: undefined,
               session,
               effort,
+              launchArgs,
               activeTurnId: undefined,
               activeProcess: undefined,
               interruptedTurnIds: new Set(),
+              abortEmittedTurnIds: new Set(),
               turns: [],
               stopped: false,
             };
@@ -180,6 +182,9 @@ export function makeAntigravityAdapter(
             conversationId: ctx.conversationId,
             model: ctx.session.model,
             effort: ctx.effort,
+            runtimeMode: ctx.session.runtimeMode,
+            interactionMode: input.interactionMode,
+            launchArgs: ctx.launchArgs,
           });
 
           const command = settings.binaryPath || "agy";
@@ -202,10 +207,23 @@ export function makeAntigravityAdapter(
 
             yield* Stream.runForEach(linesStream, (line) =>
               Effect.gen(function* () {
-                if (ctx.interruptedTurnIds.has(turnId)) return;
+                const interrupted = ctx.interruptedTurnIds.has(turnId);
                 const parsed = parseAntigravityStreamLine(line);
                 const signal = normalizeAntigravityCliEvent(parsed);
                 if (!signal) return;
+
+                // After interrupt, ignore mid-turn noise but still surface
+                // terminal abort/complete if the CLI emits one first.
+                if (
+                  interrupted &&
+                  signal.type !== "turn.aborted" &&
+                  signal.type !== "turn.completed"
+                ) {
+                  return;
+                }
+                if (ctx.abortEmittedTurnIds.has(turnId)) {
+                  return;
+                }
 
                 const stamp = yield* makeEventStamp();
 
@@ -280,8 +298,34 @@ export function makeAntigravityAdapter(
                     break;
                   }
 
+                  case "tool.failed": {
+                    yield* offerRuntimeEvent({
+                      eventId: stamp.eventId,
+                      createdAt: stamp.createdAt,
+                      provider: PROVIDER,
+                      providerInstanceId: boundInstanceId,
+                      threadId: ctx.threadId,
+                      turnId,
+                      itemId: RuntimeItemId.make(`item_tool_${signal.stepIndex}`),
+                      type: "item.completed",
+                      payload: {
+                        itemType: "tool_use",
+                        status: "failed",
+                        title: signal.toolName,
+                        data: {
+                          output: signal.output,
+                          error: signal.error,
+                          status: signal.status,
+                          durationSeconds: signal.durationSeconds,
+                        },
+                      },
+                    } as ProviderRuntimeEvent);
+                    break;
+                  }
+
                   case "turn.completed": {
                     terminalResultSeen = true;
+                    ctx.abortEmittedTurnIds.add(turnId);
                     yield* offerRuntimeEvent({
                       eventId: stamp.eventId,
                       createdAt: stamp.createdAt,
@@ -300,6 +344,7 @@ export function makeAntigravityAdapter(
 
                   case "turn.aborted": {
                     terminalResultSeen = true;
+                    ctx.abortEmittedTurnIds.add(turnId);
                     yield* offerRuntimeEvent({
                       eventId: stamp.eventId,
                       createdAt: stamp.createdAt,
@@ -319,13 +364,9 @@ export function makeAntigravityAdapter(
             );
 
             const exitStatus = yield* process.exitCode;
-            if (!terminalResultSeen && !ctx.interruptedTurnIds.has(turnId)) {
-              const exitSignal = normalizeAntigravityProcessExit({
-                exitCode: typeof exitStatus === "number" ? exitStatus : null,
-                signal: null,
-                terminalResultSeen,
-              });
-              if (exitSignal) {
+            if (!terminalResultSeen && !ctx.abortEmittedTurnIds.has(turnId)) {
+              if (ctx.interruptedTurnIds.has(turnId)) {
+                ctx.abortEmittedTurnIds.add(turnId);
                 const stamp = yield* makeEventStamp();
                 yield* offerRuntimeEvent({
                   eventId: stamp.eventId,
@@ -336,9 +377,31 @@ export function makeAntigravityAdapter(
                   turnId,
                   type: "turn.aborted",
                   payload: {
-                    reason: exitSignal.response || "Process exited unexpectedly",
+                    reason: "Turn interrupted",
                   },
                 } as ProviderRuntimeEvent);
+              } else {
+                const exitSignal = normalizeAntigravityProcessExit({
+                  exitCode: typeof exitStatus === "number" ? exitStatus : null,
+                  signal: null,
+                  terminalResultSeen,
+                });
+                if (exitSignal) {
+                  ctx.abortEmittedTurnIds.add(turnId);
+                  const stamp = yield* makeEventStamp();
+                  yield* offerRuntimeEvent({
+                    eventId: stamp.eventId,
+                    createdAt: stamp.createdAt,
+                    provider: PROVIDER,
+                    providerInstanceId: boundInstanceId,
+                    threadId: ctx.threadId,
+                    turnId,
+                    type: "turn.aborted",
+                    payload: {
+                      reason: exitSignal.response || "Process exited unexpectedly",
+                    },
+                  } as ProviderRuntimeEvent);
+                }
               }
             }
           }).pipe(Effect.forkIn(adapterScope));
@@ -366,10 +429,29 @@ export function makeAntigravityAdapter(
 
           if (ctx.activeProcess) {
             killProcess(ctx.activeProcess.process, "SIGINT");
+            if (targetTurnId && !ctx.abortEmittedTurnIds.has(targetTurnId)) {
+              ctx.abortEmittedTurnIds.add(targetTurnId);
+              const stamp = yield* makeEventStamp();
+              yield* offerRuntimeEvent({
+                eventId: stamp.eventId,
+                createdAt: stamp.createdAt,
+                provider: PROVIDER,
+                providerInstanceId: boundInstanceId,
+                threadId: ctx.threadId,
+                turnId: targetTurnId,
+                type: "turn.aborted",
+                payload: {
+                  reason: "Turn interrupted via SIGINT",
+                },
+              } as ProviderRuntimeEvent);
+            }
             ctx.activeProcess = undefined;
           }
         }),
 
+      // UA-owned approval: turns launch with --dangerously-skip-permissions, so
+      // Agy never emits mid-turn permission requests. These remain no-ops; the
+      // UA/T3 approval surface must gate before sendTurn instead.
       respondToRequest: (
         _threadId: ThreadId,
         _requestId: ApprovalRequestId,
@@ -383,17 +465,20 @@ export function makeAntigravityAdapter(
       ) => Effect.void,
 
       stopSession: (threadId: ThreadId) =>
-        SynchronizedRef.update(sessionsRef, (map) => {
-          const ctx = map.get(threadId);
+        Effect.gen(function* () {
+          const sessions = yield* SynchronizedRef.get(sessionsRef);
+          const ctx = sessions.get(threadId);
           if (ctx) {
             ctx.stopped = true;
             if (ctx.activeProcess) {
               killProcess(ctx.activeProcess.process, "SIGTERM");
               ctx.activeProcess = undefined;
             }
-            map.delete(threadId);
+            yield* SynchronizedRef.update(sessionsRef, (map) => {
+              map.delete(threadId);
+              return map;
+            });
           }
-          return map;
         }),
 
       listSessions: () =>

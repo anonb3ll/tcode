@@ -11,6 +11,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import {
+  AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
   isCommandMissingCause,
   parseGenericCliVersion,
@@ -127,13 +128,14 @@ function antigravityModelsFromSettings(
   return providerModelsFromSettings(builtInModels, customModels ?? [], EMPTY_CAPABILITIES);
 }
 
-const runAntigravityVersionCommand = (
+const runAntigravityCliCommand = (
   antigravitySettings: AntigravitySettings,
+  args: ReadonlyArray<string>,
   environment: NodeJS.ProcessEnv = process.env,
 ) =>
   Effect.gen(function* () {
     const command = antigravitySettings.binaryPath || "agy";
-    const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], {
+    const spawnCommand = yield* resolveSpawnCommand(command, [...args], {
       env: environment,
     });
     return yield* spawnAndCollect(
@@ -144,6 +146,16 @@ const runAntigravityVersionCommand = (
       }),
     );
   });
+
+const runAntigravityVersionCommand = (
+  antigravitySettings: AntigravitySettings,
+  environment: NodeJS.ProcessEnv = process.env,
+) => runAntigravityCliCommand(antigravitySettings, ["--version"], environment);
+
+const runAntigravityModelsCommand = (
+  antigravitySettings: AntigravitySettings,
+  environment: NodeJS.ProcessEnv = process.env,
+) => runAntigravityCliCommand(antigravitySettings, ["models"], environment);
 
 export const checkAntigravityProviderStatus = Effect.fn("checkAntigravityProviderStatus")(
   function* (
@@ -221,9 +233,37 @@ export const checkAntigravityProviderStatus = Effect.fn("checkAntigravityProvide
       stderr: versionCollected.value.stderr,
     };
 
+    // Auth is exit-code-only on `agy models`. Successful probes may still print
+    // diagnostics on stderr — do not treat stderr as failure by itself.
+    const modelsResult = yield* runAntigravityModelsCommand(antigravitySettings, environment).pipe(
+      Effect.timeoutOption(AUTH_PROBE_TIMEOUT_MS),
+      Effect.result,
+    );
+
+    let modelsProbe: AntigravityProbeCommandResult | null = null;
+    if (Result.isSuccess(modelsResult) && modelsResult.success._tag === "Some") {
+      modelsProbe = {
+        exitCode: modelsResult.success.value.code,
+        stdout: modelsResult.success.value.stdout,
+        stderr: modelsResult.success.value.stderr,
+      };
+    } else if (Result.isSuccess(modelsResult) && modelsResult.success._tag === "None") {
+      modelsProbe = {
+        exitCode: 1,
+        stdout: "",
+        stderr: "agy models authentication probe timed out",
+      };
+    } else {
+      modelsProbe = {
+        exitCode: 1,
+        stdout: "",
+        stderr: "agy models authentication probe failed to execute",
+      };
+    }
+
     const availability = classifyAntigravityAvailability({
       version: versionProbeResult,
-      models: { exitCode: 0, stdout: "models", stderr: "" },
+      models: modelsProbe,
     });
 
     if (availability.status === "unavailable") {
