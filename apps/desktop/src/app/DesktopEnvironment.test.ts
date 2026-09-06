@@ -79,7 +79,7 @@ describe("DesktopEnvironment", () => {
       assert.deepEqual(environment.commitHashOverride, Option.some("0123456789abcdef"));
       assert.deepEqual(environment.otlpTracesUrl, Option.some("http://127.0.0.1:4318/v1/traces"));
       assert.equal(environment.otlpExportIntervalMs, 2500);
-      assert.equal(environment.uaControlCenterUrl, "http://100.111.5.64:8765/ui");
+      assert.equal(environment.uaControlCenterUrl, "http://127.0.0.1:8765/ui");
     }),
   );
 
