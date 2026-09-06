@@ -171,11 +171,13 @@ describe("DesktopEnvironment", () => {
         {},
         {
           T3CODE_HOME: "/tmp/t3",
-          T3CODE_UA_CONTROL_CENTER_URL: " http://127.0.0.1:8765/ui ",
+          T3CODE_UA_CONTROL_CENTER_URL: " http://ua-hub.example:9876/ui ",
         },
       );
 
-      assert.equal(environment.uaControlCenterUrl, "http://127.0.0.1:8765/ui");
+      // Distinct from the loopback default so this test fails if env overrides
+      // stop being applied.
+      assert.equal(environment.uaControlCenterUrl, "http://ua-hub.example:9876/ui");
     }),
   );
 });
